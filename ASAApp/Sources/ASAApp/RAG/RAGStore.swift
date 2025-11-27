@@ -31,6 +31,13 @@ final class RAGStore {
         let page: Int?
         let chapter: String?
         let sections: Int?
+        let section_id: String?
+        let char_count: Int?
+        let token_estimate: Int?
+        let embedding_model: String?
+        let embedding_dimension: Int?
+        let part: Int?
+        let total_parts: Int?
     }
 
     private var fullIndex: [Chunk] = []
@@ -81,15 +88,15 @@ final class RAGStore {
         }
         
         let decoder = JSONDecoder()
-        if let fullData = try? Data(contentsOf: baseURL.appendingPathComponent("AbletonFullIndex.json")),
+        if let fullData = try? Data(contentsOf: baseURL.appendingPathComponent("live12-manual-chunks-with-embeddings.json")),
            let chunks = try? decoder.decode([Chunk].self, from: fullData) {
             fullIndex = chunks
-            print("Loaded \(chunks.count) chunks from AbletonFullIndex.json")
+            print("Loaded \(chunks.count) chunks from live12-manual-chunks-with-embeddings.json")
         }
-        if let liteData = try? Data(contentsOf: baseURL.appendingPathComponent("AbletonLiteDiffIndex.json")),
+        if let liteData = try? Data(contentsOf: baseURL.appendingPathComponent("ableton-versions-diff-chunks-embeddings.json")),
            let chunks = try? decoder.decode([Chunk].self, from: liteData) {
             liteDiffIndex = chunks
-            print("Loaded \(chunks.count) chunks from AbletonLiteDiffIndex.json")
+            print("Loaded \(chunks.count) chunks from ableton-versions-diff-chunks-embeddings.json")
         }
     }
 
@@ -116,6 +123,9 @@ final class RAGStore {
                 }
                 if let chapter = metadata.chapter {
                     metaParts.append("Chapter: \(chapter)")
+                }
+                if let sectionId = metadata.section_id {
+                    metaParts.append("Section ID: \(sectionId)")
                 }
                 if !metaParts.isEmpty {
                     text = "[\(metaParts.joined(separator: ", "))]\n\n\(text)"
