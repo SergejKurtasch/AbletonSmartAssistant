@@ -93,10 +93,10 @@ final class RAGStore {
             fullIndex = chunks
             print("Loaded \(chunks.count) chunks from live12-manual-chunks-with-embeddings.json")
         }
-        if let liteData = try? Data(contentsOf: baseURL.appendingPathComponent("ableton-versions-diff-chunks-embeddings.json")),
-           let chunks = try? decoder.decode([Chunk].self, from: liteData) {
+        if let versionsData = try? Data(contentsOf: baseURL.appendingPathComponent("Ableton-versions-diff-chunks-with-embeddings.json")),
+           let chunks = try? decoder.decode([Chunk].self, from: versionsData) {
             liteDiffIndex = chunks
-            print("Loaded \(chunks.count) chunks from ableton-versions-diff-chunks-embeddings.json")
+            print("Loaded \(chunks.count) chunks from Ableton-versions-diff-chunks-with-embeddings.json")
         }
     }
 
@@ -104,11 +104,9 @@ final class RAGStore {
         let queryEmbedding = EmbeddingHelper.embed(text: query)
         let full = topMatches(in: fullIndex, queryEmbedding: queryEmbedding, topK: topK)
 
-        var liteContext = ""
-        if edition == .lite {
-            let lite = topMatches(in: liteDiffIndex, queryEmbedding: queryEmbedding, topK: 2)
-            liteContext = lite.map(\.content).joined(separator: "\n---\n")
-        }
+        // Always include version compatibility information
+        let versions = topMatches(in: liteDiffIndex, queryEmbedding: queryEmbedding, topK: 2)
+        let versionsContext = versions.map(\.content).joined(separator: "\n---\n")
 
         // Build the context string with metadata annotations
         let baseChunks = full.map { chunk -> String in
@@ -144,15 +142,15 @@ final class RAGStore {
         """
 
         let userContext: String
-        if liteContext.isEmpty {
+        if versionsContext.isEmpty {
             userContext = base
         } else {
             userContext = """
             Documentation:
             \(base)
 
-            Lite Restrictions:
-            \(liteContext)
+            Version Compatibility:
+            \(versionsContext)
             """
         }
 
