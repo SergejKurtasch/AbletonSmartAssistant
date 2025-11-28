@@ -7,7 +7,7 @@ enum ConversationRole: String, Codable {
 }
 
 struct ConversationEntry: Identifiable, Codable {
-    let id = UUID()
+    let id: UUID
     let role: ConversationRole
     let text: String
     let screenshotURL: URL?
@@ -15,12 +15,14 @@ struct ConversationEntry: Identifiable, Codable {
     let createdAt: Date
 
     init(
+        id: UUID = UUID(),
         role: ConversationRole,
         text: String,
         screenshotURL: URL? = nil,
         audioURL: URL? = nil,
         createdAt: Date = Date()
     ) {
+        self.id = id
         self.role = role
         self.text = text
         self.screenshotURL = screenshotURL

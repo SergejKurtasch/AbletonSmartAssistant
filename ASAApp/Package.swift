@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "ASAApp",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v13) // ScreenCaptureKit is available from macOS 12.3+, but the project uses macOS 13+ APIs
     ],
     products: [
         .executable(

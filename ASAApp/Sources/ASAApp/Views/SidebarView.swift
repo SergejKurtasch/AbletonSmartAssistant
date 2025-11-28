@@ -8,6 +8,7 @@ struct SidebarView: View {
 
     @State private var userInput: String = ""
     @State private var isSending: Bool = false
+    @State private var statusMessage: String = ""
 
     var body: some View {
         VStack(spacing: 12) {
@@ -20,6 +21,12 @@ struct SidebarView: View {
         .frame(minWidth: 360)
         .onAppear {
             assistantSession.updateAutoCapture(isEnabled: store.isAutoCaptureEnabled)
+        }
+        .onChange(of: store.isListening) { _ in
+            updateStatusMessage()
+        }
+        .onChange(of: store.isRealtimeActive) { _ in
+            updateStatusMessage()
         }
     }
 
@@ -40,10 +47,11 @@ struct SidebarView: View {
             }
 
             HStack(spacing: 12) {
-                Button(store.isListening ? "Stop Listening" : "Start Listening") {
-                    toggleListening()
+                Button(store.isRealtimeActive ? "🎙 Stop Voice Assistant" : "🎙 Start Voice Assistant") {
+                    toggleVoiceAssistant()
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(isSending)
 
                 Button("Take Screenshot") {
                     assistantSession.captureManualScreenshot()
@@ -54,6 +62,20 @@ struct SidebarView: View {
                     .onChange(of: store.isAutoCaptureEnabled) { enabled in
                         assistantSession.updateAutoCapture(isEnabled: enabled)
                     }
+            }
+            
+            // Status message
+            if !statusMessage.isEmpty {
+                HStack {
+                    if store.isListening {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                    }
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
         }
     }
@@ -130,6 +152,23 @@ struct SidebarView: View {
 
     private func sendMessage() {
         guard !userInput.isEmpty else { return }
+        
+        // If Realtime is active, send through it
+        if store.isRealtimeActive {
+            Task {
+                await assistantSession.handleUserText(
+                    userInput,
+                    edition: store.abletonEdition,
+                    autoCapture: store.isAutoCaptureEnabled
+                )
+                await MainActor.run {
+                    userInput = ""
+                }
+            }
+            return
+        }
+        
+        // Otherwise, use HTTP API
         let entry = ConversationEntry(role: .user, text: userInput)
         store.append(entry)
         isSending = true
@@ -148,12 +187,25 @@ struct SidebarView: View {
         }
     }
 
-    private func toggleListening() {
-        store.isListening.toggle()
-        if store.isListening {
-            audioPipeline.startStreaming(callback: assistantSession.handleAudioChunk)
+    private func toggleVoiceAssistant() {
+        if store.isRealtimeActive {
+            assistantSession.stopRealtimeSession()
+            statusMessage = ""
         } else {
-            audioPipeline.stopStreaming()
+            assistantSession.startRealtimeSession()
+            updateStatusMessage()
+        }
+    }
+    
+    private func updateStatusMessage() {
+        if store.isRealtimeActive {
+            if store.isListening {
+                statusMessage = "Assistant is listening..."
+            } else {
+                statusMessage = "Processing..."
+            }
+        } else {
+            statusMessage = ""
         }
     }
 }

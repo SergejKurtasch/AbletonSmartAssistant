@@ -10,6 +10,15 @@ final class AssistantSession {
     private let conversationStore: ConversationStore
     private let audioPipeline: AudioPipeline
     private let overlayController = OverlayWindowController()
+    private let functionRouter = AssistantFunctionRouter()
+    
+    // Realtime API components
+    private var realtimeSession: RealtimeSession?
+    private var voiceInputManager: VoiceInputManager?
+    private var voiceOutputManager: VoiceOutputManager?
+    
+    // State
+    private var isRealtimeActive: Bool = false
 
     init(
         ragStore: RAGStore,
@@ -33,6 +42,13 @@ final class AssistantSession {
         edition: AbletonEdition,
         autoCapture: Bool
     ) async {
+        // If Realtime session is active, send text through it
+        if isRealtimeActive, let realtimeSession = realtimeSession {
+            realtimeSession.sendText(text)
+            return
+        }
+        
+        // Otherwise, use HTTP API (original behavior)
         let ragContext = ragStore.retrieve(for: text, edition: edition)
         do {
             let chatQuery = ChatQuery(
@@ -61,39 +77,210 @@ final class AssistantSession {
     }
 
     func handleAudioChunk(_ chunk: Data) {
-        Task {
-            guard !chunk.isEmpty else { return }
-            // Placeholder: send chunk into realtime stream
-            logger.debug("Received audio chunk length \(chunk.count)")
+        // Audio chunks are now handled by VoiceInputManager
+        // This method is kept for backward compatibility
+        if isRealtimeActive {
+            realtimeSession?.sendAudioFrame(chunk)
+        }
+    }
+    
+    /// Start Realtime voice assistant session
+    func startRealtimeSession() {
+        guard !isRealtimeActive else {
+            logger.warning("Realtime session already active")
+            return
+        }
+        
+        logger.info("Starting Realtime voice assistant session...")
+        
+        guard let apiKey = EnvLoader.loadAPIKey(), !apiKey.isEmpty else {
+            logger.error("API key not found")
+            return
+        }
+        
+        // Create Realtime session
+        let session = RealtimeSession(
+            apiKey: apiKey,
+            ragStore: ragStore,
+            conversationStore: conversationStore,
+            edition: conversationStore.abletonEdition
+        )
+        
+        // Setup callbacks BEFORE starting (so errors are handled)
+        setupRealtimeCallbacks(session)
+        
+        // Create voice managers
+        let inputManager = VoiceInputManager(audioPipeline: audioPipeline, realtimeSession: session)
+        let outputManager = VoiceOutputManager()
+        
+        // Setup voice output callback
+        session.onAudioDelta = { [weak outputManager] audioData in
+            outputManager?.addAudioData(audioData)
+        }
+        
+        // Store references
+        self.realtimeSession = session
+        self.voiceInputManager = inputManager
+        self.voiceOutputManager = outputManager
+        
+        // Start everything
+        session.start()
+        inputManager.start()
+        outputManager.start()
+        
+        // Set state only after everything is started
+        // If connection fails, onError will call stopRealtimeSession() to reset state
+        isRealtimeActive = true
+        conversationStore.isRealtimeActive = true
+    }
+    
+    /// Stop Realtime voice assistant session
+    func stopRealtimeSession() {
+        guard isRealtimeActive else {
+            logger.warning("Realtime session not active")
+            return
+        }
+        
+        logger.info("Stopping Realtime voice assistant session...")
+        
+        voiceInputManager?.stop()
+        voiceOutputManager?.stop()
+        realtimeSession?.stop()
+        
+        voiceInputManager = nil
+        voiceOutputManager = nil
+        realtimeSession = nil
+        
+        isRealtimeActive = false
+        conversationStore.isRealtimeActive = false
+    }
+    
+    private func setupRealtimeCallbacks(_ session: RealtimeSession) {
+        // Text delta
+        session.onTextDelta = { [weak self] delta in
+            // Text is being streamed, could update UI in real-time if needed
+            self?.logger.debug("Text delta: \(delta)")
+        }
+        
+        // Response completed
+        session.onResponseCompleted = { [weak self] in
+            self?.logger.info("Response completed")
+        }
+        
+        // Speech events
+        session.onSpeechStarted = { [weak self] in
+            self?.logger.info("Speech started")
+            self?.conversationStore.isListening = true
+        }
+        
+        session.onSpeechStopped = { [weak self] in
+            self?.logger.info("Speech stopped")
+            self?.conversationStore.isListening = false
+        }
+        
+        // Status changes
+        session.onStatusChange = { [weak self] status in
+            self?.logger.info("Status: \(status)")
+            // Could update UI status here
+        }
+        
+        // Function calls
+        session.onFunctionCall = { [weak self] name, arguments, callID in
+            guard let self = self else {
+                return ["success": false, "error": "Session deallocated"]
+            }
+            
+            // Parse arguments
+            let parsedArgs = self.functionRouter.parseArguments(arguments)
+            
+            // Execute function
+            return await self.functionRouter.executeFunction(name: name, arguments: parsedArgs)
+        }
+        
+        // Errors
+        session.onError = { [weak self] error in
+            guard let self = self else { return }
+            self.logger.error("Realtime session error: \(error.localizedDescription)")
+            
+            // Add error message to conversation
+            let entry = ConversationEntry(
+                role: .assistant,
+                text: "Realtime session error: \(error.localizedDescription)"
+            )
+            self.conversationStore.append(entry)
+            
+            // Stop the session and reset state to unblock input
+            self.stopRealtimeSession()
         }
     }
 
     func updateAutoCapture(isEnabled: Bool) {
+        let logger = Logger(subsystem: "ASAApp", category: "AssistantSession")
+        
         if isEnabled {
-            ClickMonitor.shared.start { [weak self] location in
-                guard let self else { return }
-                Task.detached {
+            logger.info("Enabling automatic click capture")
+            
+            // Check permissions before starting
+            if !ClickMonitor.shared.hasAccessibilityPermissions {
+                logger.warning("Accessibility permissions not granted")
+                
+                // Show permission request dialog (only once)
+                ClickMonitor.shared.requestAccessibilityPermissions()
+                
+                // Add message to chat with instructions
+                conversationStore.append(
+                    ConversationEntry(
+                        role: .assistant,
+                        text: """
+                        ⚠️ Accessibility permissions are required for automatic click capture to work.
+                        
+                        Instructions:
+                        1. If a macOS dialog appears, click "Open Settings"
+                        2. Or open manually: Settings → Privacy & Security → Accessibility
+                        3. Add ASAApp to the list of allowed applications (click "+")
+                        4. IMPORTANT: Fully close and restart the ASAApp application
+                        5. After restart, enable the "Auto-click Capture" toggle again
+                        
+                        After this, automatic click capture will work.
+                        """
+                    )
+                )
+                return
+            }
+            
+            // Keep references to necessary objects so they are not deallocated
+            let store = conversationStore
+            let overlay = overlayController
+            
+            ClickMonitor.shared.start { location in
+                logger.info("Received click callback at point: (\(location.x), \(location.y))")
+                
+                Task { @MainActor in
+                    logger.info("Starting screenshot capture for click at point: (\(location.x), \(location.y))")
                     do {
-                        let url = try await ScreenshotManager.shared.captureRegion(around: location)
-                        await MainActor.run {
-                            let entry = ConversationEntry(
-                                role: .system,
-                                text: "Click captured at (\(Int(location.x)), \(Int(location.y))).",
-                                screenshotURL: url
-                            )
-                            self.conversationStore.append(entry)
-                            self.renderPulse(at: location)
-                        }
+                        let url = try await AbletonScreenshotService.shared.captureRegionAround(point: location)
+                        logger.info("Screenshot successfully captured: \(url.path)")
+                        let entry = ConversationEntry(
+                            role: .system,
+                            text: "Click captured at (\(Int(location.x)), \(Int(location.y))).",
+                            screenshotURL: url
+                        )
+                        store.append(entry)
+                        
+                        // Render pulse on overlay
+                        let command = OverlayCommand(type: .pulse(center: location, radius: 60), caption: "Click")
+                        overlay.render(commands: [command])
                     } catch {
-                        await MainActor.run {
-                            self.conversationStore.append(
-                                ConversationEntry(role: .assistant, text: "Failed to capture a screenshot for that click.")
-                            )
-                        }
+                        logger.error("Error capturing screenshot: \(error.localizedDescription)")
+                        let errorMessage = error.localizedDescription
+                        store.append(
+                            ConversationEntry(role: .assistant, text: "Failed to capture screenshot for this click: \(errorMessage)")
+                        )
                     }
                 }
             }
         } else {
+            logger.info("Disabling automatic click capture")
             ClickMonitor.shared.stop()
         }
     }
@@ -104,26 +291,28 @@ final class AssistantSession {
     }
 
     func captureManualScreenshot() {
-        ScreenshotManager.shared.captureFullAbletonWindow { result in
-            switch result {
-            case .success(let url):
+        Task { @MainActor in
+            do {
+                let url = try await AbletonScreenshotService.shared.captureAbletonWindow()
                 let entry = ConversationEntry(role: .system, text: "Screenshot saved", screenshotURL: url)
-                Task { @MainActor in self.conversationStore.append(entry) }
-            case .failure(let error):
-                Task { @MainActor in
-                    self.conversationStore.append(
-                        ConversationEntry(role: .assistant, text: "Screenshot error: \(error.localizedDescription)")
-                    )
-                }
+                self.conversationStore.append(entry)
+            } catch {
+                self.conversationStore.append(
+                    ConversationEntry(role: .assistant, text: "Screenshot error: \(error.localizedDescription)")
+                )
             }
         }
     }
 
     func importScreenshot() {
-        ScreenshotManager.shared.importScreenshot { url in
-            guard let url else { return }
-            let entry = ConversationEntry(role: .system, text: "Screenshot imported", screenshotURL: url)
-            Task { @MainActor in self.conversationStore.append(entry) }
+        Task { @MainActor in
+            AbletonScreenshotService.shared.importScreenshot { url in
+                guard let url else { return }
+                Task { @MainActor in
+                    let entry = ConversationEntry(role: .system, text: "Screenshot imported", screenshotURL: url)
+                    self.conversationStore.append(entry)
+                }
+            }
         }
     }
 }
