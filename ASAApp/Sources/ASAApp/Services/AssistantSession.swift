@@ -19,6 +19,7 @@ final class AssistantSession {
     
     // State
     private var isRealtimeActive: Bool = false
+    private var connectionTimeoutTask: Task<Void, Never>?
 
     init(
         ragStore: RAGStore,
@@ -88,6 +89,11 @@ final class AssistantSession {
     func startRealtimeSession() {
         guard !isRealtimeActive else {
             logger.warning("Realtime session already active")
+            let entry = ConversationEntry(
+                role: .assistant,
+                text: "Voice assistant is already running."
+            )
+            conversationStore.append(entry)
             return
         }
         
@@ -95,6 +101,15 @@ final class AssistantSession {
         
         guard let apiKey = EnvLoader.loadAPIKey(), !apiKey.isEmpty else {
             logger.error("API key not found")
+            let entry = ConversationEntry(
+                role: .assistant,
+                text: """
+                ⚠️ Cannot start voice assistant: API key not found.
+                
+                Please set OPENAI_API_KEY in your .env file or environment variables.
+                """
+            )
+            conversationStore.append(entry)
             return
         }
         
@@ -123,25 +138,49 @@ final class AssistantSession {
         self.voiceInputManager = inputManager
         self.voiceOutputManager = outputManager
         
-        // Start everything
+        // Start WebSocket connection first
         session.start()
-        inputManager.start()
-        outputManager.start()
         
-        // Set state only after everything is started
-        // If connection fails, onError will call stopRealtimeSession() to reset state
-        isRealtimeActive = true
-        conversationStore.isRealtimeActive = true
+        // Voice managers will be started after connection is established
+        // (see setupRealtimeCallbacks - onStatusChange when status becomes "Ready")
+        
+        // Set connection timeout (10 seconds)
+        connectionTimeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 10_000_000_000) // 10 seconds
+            
+            // Check if connection was established
+            if !isRealtimeActive {
+                logger.error("Connection timeout - session not established")
+                let entry = ConversationEntry(
+                    role: .assistant,
+                    text: """
+                    ⚠️ Connection timeout: Failed to establish connection to voice assistant.
+                    
+                    Please check your internet connection and try again.
+                    """
+                )
+                conversationStore.append(entry)
+                stopRealtimeSession()
+            }
+        }
+        
+        // Note: isRealtimeActive will be set to true only after successful connection
+        // This happens in setupRealtimeCallbacks when session is ready
     }
     
     /// Stop Realtime voice assistant session
     func stopRealtimeSession() {
-        guard isRealtimeActive else {
+        // Allow stopping even if not fully active (e.g., if connection failed)
+        if !isRealtimeActive && realtimeSession == nil {
             logger.warning("Realtime session not active")
             return
         }
         
         logger.info("Stopping Realtime voice assistant session...")
+        
+        // Cancel connection timeout
+        connectionTimeoutTask?.cancel()
+        connectionTimeoutTask = nil
         
         voiceInputManager?.stop()
         voiceOutputManager?.stop()
@@ -180,8 +219,23 @@ final class AssistantSession {
         
         // Status changes
         session.onStatusChange = { [weak self] status in
-            self?.logger.info("Status: \(status)")
-            // Could update UI status here
+            guard let self = self else { return }
+            self.logger.info("Status: \(status)")
+            
+            // When status becomes "Ready", connection is fully established
+            if status == "Ready" && !self.isRealtimeActive {
+                self.logger.info("Voice assistant session fully established")
+                self.isRealtimeActive = true
+                self.conversationStore.isRealtimeActive = true
+                
+                // Cancel connection timeout
+                self.connectionTimeoutTask?.cancel()
+                self.connectionTimeoutTask = nil
+                
+                // Now start voice managers since connection is ready
+                self.voiceInputManager?.start()
+                self.voiceOutputManager?.start()
+            }
         }
         
         // Function calls
@@ -202,10 +256,39 @@ final class AssistantSession {
             guard let self = self else { return }
             self.logger.error("Realtime session error: \(error.localizedDescription)")
             
+            // Cancel connection timeout
+            self.connectionTimeoutTask?.cancel()
+            self.connectionTimeoutTask = nil
+            
             // Add error message to conversation
+            var errorMessage = "⚠️ Voice assistant error: \(error.localizedDescription)"
+            
+            // Provide more helpful error messages for common issues
+            if let nsError = error as NSError? {
+                if nsError.domain == "RealtimeWebSocket" {
+                    switch nsError.code {
+                    case 1:
+                        errorMessage = "⚠️ Cannot connect: API key is empty. Please check your .env file."
+                    case 4:
+                        errorMessage = "⚠️ Connection failed: Could not establish connection to OpenAI Realtime API. Please check your internet connection."
+                    case 5, 6, 7:
+                        errorMessage = "⚠️ Connection error: Socket is not connected. The connection may have been lost or not yet established."
+                    default:
+                        break
+                    }
+                }
+                
+                // Check for common socket errors
+                let errorDesc = error.localizedDescription.lowercased()
+                if errorDesc.contains("socket is not connected") || 
+                   errorDesc.contains("socket") && errorDesc.contains("not connected") {
+                    errorMessage = "⚠️ Connection error: Socket is not connected. Please try starting the voice assistant again."
+                }
+            }
+            
             let entry = ConversationEntry(
                 role: .assistant,
-                text: "Realtime session error: \(error.localizedDescription)"
+                text: errorMessage
             )
             self.conversationStore.append(entry)
             

@@ -16,6 +16,7 @@ final class RealtimeSession {
     private var isProcessingFunctionCall: Bool = false
     private var functionCallName: String?
     private var functionCallArguments: String = ""
+    private var isSessionInitialized: Bool = false
     
     // Callbacks
     var onTextDelta: ((String) -> Void)?
@@ -50,11 +51,17 @@ final class RealtimeSession {
     /// Stop Realtime session
     func stop() {
         logger.info("Stopping Realtime session...")
+        isSessionInitialized = false
         webSocketClient.disconnect()
     }
     
     /// Send text message
     func sendText(_ text: String) {
+        guard isSessionInitialized else {
+            logger.warning("Cannot send text: session not initialized")
+            return
+        }
+        
         logger.debug("Sending text: \(text)")
         webSocketClient.sendText(text)
         
@@ -65,6 +72,11 @@ final class RealtimeSession {
     
     /// Send audio frame
     func sendAudioFrame(_ audioData: Data) {
+        guard isSessionInitialized else {
+            logger.warning("Cannot send audio: session not initialized")
+            return
+        }
+        
         webSocketClient.sendAudioFrame(audioData)
     }
     
@@ -80,6 +92,10 @@ final class RealtimeSession {
     
     var isConnected: Bool {
         webSocketClient.isConnected
+    }
+    
+    var sessionInitialized: Bool {
+        isSessionInitialized
     }
     
     // MARK: - Private
@@ -103,8 +119,10 @@ final class RealtimeSession {
         webSocketClient.onConnectionChange { [weak self] connected in
             Task { @MainActor in
                 if connected {
-                    self?.initializeSession()
+                    self?.onStatusChange?("Connecting...")
+                    // Wait for session.created event before initializing
                 } else {
+                    self?.isSessionInitialized = false
                     self?.onStatusChange?("Disconnected")
                 }
             }
@@ -128,7 +146,10 @@ final class RealtimeSession {
             
         case .responseAudioDelta:
             if let audioData = RealtimeEventParser.extractAudioDelta(event) {
+                logger.debug("Received audio delta: \(audioData.count) bytes")
                 onAudioDelta?(audioData)
+            } else {
+                logger.warning("Failed to extract audio delta from event")
             }
             
         case .responseDone:
@@ -170,6 +191,9 @@ final class RealtimeSession {
             )
             onError?(error)
             
+        case .sessionCreated:
+            handleSessionCreated(event)
+            
         case .sessionUpdated:
             logger.info("Session updated")
             
@@ -178,7 +202,23 @@ final class RealtimeSession {
         }
     }
     
+    private func handleSessionCreated(_ event: RealtimeEventParser.ParsedEvent) {
+        if let sessionID = RealtimeEventParser.extractSessionCreated(event) {
+            logger.info("Session created with ID: \(sessionID)")
+        } else {
+            logger.info("Session created (no ID provided)")
+        }
+        
+        // Now that session is created, initialize it with RAG context
+        initializeSession()
+    }
+    
     private func initializeSession() {
+        guard !isSessionInitialized else {
+            logger.warning("Session already initialized")
+            return
+        }
+        
         logger.info("Initializing Realtime session with RAG context...")
         
         // Get RAG context (use empty query for initial context)
@@ -320,7 +360,8 @@ final class RealtimeSession {
             logger.info("Adding \(conversationItems.count) conversation items to history")
         }
         
-        onStatusChange?("Connected")
+        isSessionInitialized = true
+        onStatusChange?("Ready")
     }
     
     private func handleResponseDone(_ event: RealtimeEventParser.ParsedEvent) {

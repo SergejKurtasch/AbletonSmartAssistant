@@ -12,10 +12,23 @@ final class AudioPipeline: NSObject {
 
     func startStreaming(callback: @escaping (Data) -> Void) {
         captureCallback = callback
+        
+        // On macOS, permissions are requested automatically when we try to access the microphone
+        // Just configure and start - system will prompt if needed
         configureSessionIfNeeded()
         installTapIfNeeded()
+        
         if !engine.isRunning {
-            try? engine.start()
+            do {
+                try engine.start()
+                print("✅ Audio engine started successfully")
+            } catch {
+                print("❌ Failed to start audio engine: \(error.localizedDescription)")
+                // If error is permission-related, macOS will show a dialog
+                if let nsError = error as NSError? {
+                    print("   Error domain: \(nsError.domain), code: \(nsError.code)")
+                }
+            }
         }
     }
 
@@ -66,16 +79,19 @@ final class AudioPipeline: NSObject {
     private func installTapIfNeeded() {
         let inputNode = engine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
+        print("📊 Audio format: sampleRate=\(format.sampleRate), channels=\(format.channelCount)")
+        
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self else { return }
-            let vadResult = self.vadService.analyze(buffer: buffer)
-            guard vadResult.isSpeech else { return }
-
+            
+            // For now, send all audio (VAD is handled by Realtime API)
+            // This ensures we don't miss any speech
             if let data = buffer.toPCMData() {
                 self.captureCallback?(data)
             }
         }
+        print("✅ Audio tap installed")
     }
 }
 

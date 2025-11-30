@@ -17,6 +17,7 @@ struct RealtimeEventParser {
         case responseFunctionCallArgumentsDelta = "response.function_call_arguments.delta"
         case error = "error"
         case sessionUpdated = "session.updated"
+        case sessionCreated = "session.created"
         case unknown
     }
     
@@ -73,6 +74,12 @@ struct RealtimeEventParser {
         let code = event.data["code"] as? String
         let message = event.data["message"] as? String
         return (code: code, message: message)
+    }
+    
+    /// Extract session ID from session.created event
+    static func extractSessionCreated(_ event: ParsedEvent) -> String? {
+        guard event.type == .sessionCreated else { return nil }
+        return event.data["session_id"] as? String
     }
 }
 
