@@ -8,6 +8,7 @@ final class ConversationStore: ObservableObject {
     @Published var isAutoCaptureEnabled: Bool = false
     @Published var selectedScreenshot: URL?
     @Published var isRealtimeActive: Bool = false
+    @Published var isRecording: Bool = false
     @AppStorage("abletonEdition") var abletonEdition: AbletonEdition = .suite
 
     func append(_ entry: ConversationEntry) {

@@ -9,6 +9,10 @@ struct SidebarView: View {
     @State private var userInput: String = ""
     @State private var isSending: Bool = false
     @State private var statusMessage: String = ""
+    @State private var voiceToTextService: VoiceToTextService?
+    @State private var isTranscribing: Bool = false
+    @State private var activePlayerEntryId: UUID? = nil
+    @State private var playerAudioURL: URL? = nil
 
     var body: some View {
         VStack(spacing: 12) {
@@ -21,12 +25,10 @@ struct SidebarView: View {
         .frame(minWidth: 360)
         .onAppear {
             assistantSession.updateAutoCapture(isEnabled: store.isAutoCaptureEnabled)
-        }
-        .onChange(of: store.isListening) { _ in
-            updateStatusMessage()
-        }
-        .onChange(of: store.isRealtimeActive) { _ in
-            updateStatusMessage()
+            // Initialize VoiceToTextService
+            if let apiKey = EnvLoader.loadAPIKey(), !apiKey.isEmpty {
+                voiceToTextService = VoiceToTextService(apiKey: apiKey, audioPipeline: audioPipeline)
+            }
         }
     }
 
@@ -47,12 +49,6 @@ struct SidebarView: View {
             }
 
             HStack(spacing: 12) {
-                Button(store.isRealtimeActive ? "🎙 Stop Voice Assistant" : "🎙 Start Voice Assistant") {
-                    toggleVoiceAssistant()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isSending)
-
                 Button("Take Screenshot") {
                     assistantSession.captureManualScreenshot()
                 }
@@ -67,9 +63,9 @@ struct SidebarView: View {
             // Status message
             if !statusMessage.isEmpty {
                 HStack {
-                    if store.isListening {
+                    if store.isRecording {
                         Circle()
-                            .fill(Color.green)
+                            .fill(Color.red)
                             .frame(width: 8, height: 8)
                     }
                     Text(statusMessage)
@@ -121,10 +117,69 @@ struct SidebarView: View {
                     store.selectedScreenshot = screenshotURL
                 }
             }
+            
+            // Audio player for assistant responses
+            if entry.role == .assistant {
+                if activePlayerEntryId == entry.id {
+                    // Show player
+                    AudioPlayerView(ttsService: assistantSession.ttsService)
+                        .onChange(of: assistantSession.ttsService.isPlaying) { isPlaying in
+                            if !isPlaying && assistantSession.ttsService.currentTime == 0 {
+                                // Playback finished or stopped, hide player
+                                if let url = playerAudioURL {
+                                    try? FileManager.default.removeItem(at: url)
+                                }
+                                activePlayerEntryId = nil
+                                playerAudioURL = nil
+                            }
+                        }
+                        .onDisappear {
+                            // Clean up when view disappears
+                            if let url = playerAudioURL {
+                                try? FileManager.default.removeItem(at: url)
+                            }
+                        }
+                } else {
+                    // Show play button at the end
+                    HStack {
+                        Spacer()
+                        Button(action: {
+                            Task {
+                                await loadAndShowPlayer(for: entry)
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "speaker.wave.2.fill")
+                                Text("Play audio")
+                            }
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
         }
         .padding(12)
         .background(entry.role == .user ? Color.accentColor.opacity(0.08) : Color.gray.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+    
+    private func loadAndShowPlayer(for entry: ConversationEntry) async {
+        // Stop any current playback
+        if activePlayerEntryId != nil {
+            assistantSession.ttsService.stopPlayback()
+        }
+        
+        // Generate audio and load into player
+        do {
+            let audioURL = try await assistantSession.generateSpeechToFile(from: entry.text)
+            try assistantSession.ttsService.loadAudio(from: audioURL)
+            activePlayerEntryId = entry.id
+            playerAudioURL = audioURL
+        } catch {
+            statusMessage = "⚠️ Failed to generate audio: \(error.localizedDescription)"
+        }
     }
 
     private var inputArea: some View {
@@ -132,12 +187,25 @@ struct SidebarView: View {
             TextEditor(text: $userInput)
                 .frame(minHeight: 80)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary, lineWidth: 1))
+                .disabled(isTranscribing)
 
             HStack {
                 Button("Attach Screenshot") {
                     assistantSession.importScreenshot()
                 }
+                
+                // Microphone button
+                Button(action: toggleRecording) {
+                    Image(systemName: "mic.fill")
+                        .foregroundColor(store.isRecording ? .red : .blue)
+                        .font(.system(size: 18))
+                }
+                .buttonStyle(.bordered)
+                .disabled(isTranscribing || isSending)
+                .help(store.isRecording ? "Stop recording" : "Start voice input")
+                
                 Spacer()
+                
                 Button(action: sendMessage) {
                     if isSending {
                         ProgressView()
@@ -145,7 +213,7 @@ struct SidebarView: View {
                         Text("Send")
                     }
                 }
-                .disabled(userInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+                .disabled(userInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending || isTranscribing)
             }
         }
     }
@@ -153,22 +221,7 @@ struct SidebarView: View {
     private func sendMessage() {
         guard !userInput.isEmpty else { return }
         
-        // If Realtime is active, send through it
-        if store.isRealtimeActive {
-            Task {
-                await assistantSession.handleUserText(
-                    userInput,
-                    edition: store.abletonEdition,
-                    autoCapture: store.isAutoCaptureEnabled
-                )
-                await MainActor.run {
-                    userInput = ""
-                }
-            }
-            return
-        }
-        
-        // Otherwise, use HTTP API
+        // Use HTTP API
         let entry = ConversationEntry(role: .user, text: userInput)
         store.append(entry)
         isSending = true
@@ -186,26 +239,54 @@ struct SidebarView: View {
             )
         }
     }
-
-    private func toggleVoiceAssistant() {
-        if store.isRealtimeActive {
-            assistantSession.stopRealtimeSession()
-            statusMessage = ""
+    
+    private func toggleRecording() {
+        if store.isRecording {
+            // Stop recording and transcribe
+            stopRecordingAndTranscribe()
         } else {
-            assistantSession.startRealtimeSession()
-            updateStatusMessage()
+            // Start recording
+            startRecording()
         }
     }
     
-    private func updateStatusMessage() {
-        if store.isRealtimeActive {
-            if store.isListening {
-                statusMessage = "Assistant is listening..."
-            } else {
-                statusMessage = "Processing..."
+    private func startRecording() {
+        guard let service = voiceToTextService else {
+            statusMessage = "⚠️ Voice input not available. Check API key."
+            return
+        }
+        
+        do {
+            try service.startRecording()
+            statusMessage = "Recording... Tap microphone to stop"
+            store.isRecording = true
+        } catch {
+            statusMessage = "⚠️ Failed to start recording: \(error.localizedDescription)"
+            store.isRecording = false
+        }
+    }
+    
+    private func stopRecordingAndTranscribe() {
+        guard let service = voiceToTextService else { return }
+        
+        store.isRecording = false
+        statusMessage = "Transcribing..."
+        isTranscribing = true
+        
+        Task {
+            do {
+                let transcribedText = try await service.stopAndTranscribe()
+                await MainActor.run {
+                    userInput = transcribedText
+                    statusMessage = ""
+                    isTranscribing = false
+                }
+            } catch {
+                await MainActor.run {
+                    statusMessage = "⚠️ Transcription failed: \(error.localizedDescription)"
+                    isTranscribing = false
+                }
             }
-        } else {
-            statusMessage = ""
         }
     }
 }

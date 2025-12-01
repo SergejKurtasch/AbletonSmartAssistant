@@ -31,6 +31,31 @@ final class AudioPipeline: NSObject {
             }
         }
     }
+    
+    func startStreamingWithBuffer(callback: @escaping (AVAudioPCMBuffer) -> Void) {
+        // On macOS, permissions are requested automatically when we try to access the microphone
+        configureSessionIfNeeded()
+        
+        let inputNode = engine.inputNode
+        let format = inputNode.outputFormat(forBus: 0)
+        currentFormat = format
+        print("📊 Audio format: sampleRate=\(format.sampleRate), channels=\(format.channelCount)")
+        
+        inputNode.removeTap(onBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            callback(buffer)
+        }
+        print("✅ Audio tap installed")
+        
+        if !engine.isRunning {
+            do {
+                try engine.start()
+                print("✅ Audio engine started successfully")
+            } catch {
+                print("❌ Failed to start audio engine: \(error.localizedDescription)")
+            }
+        }
+    }
 
     func stopStreaming() {
         engine.inputNode.removeTap(onBus: 0)
@@ -76,9 +101,16 @@ final class AudioPipeline: NSObject {
         audioSessionConfigured = true
     }
 
+    private var currentFormat: AVAudioFormat?
+    
+    func getInputFormat() -> AVAudioFormat? {
+        return engine.inputNode.outputFormat(forBus: 0)
+    }
+    
     private func installTapIfNeeded() {
         let inputNode = engine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
+        currentFormat = format
         print("📊 Audio format: sampleRate=\(format.sampleRate), channels=\(format.channelCount)")
         
         inputNode.removeTap(onBus: 0)
