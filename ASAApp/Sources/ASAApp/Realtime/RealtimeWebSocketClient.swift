@@ -10,6 +10,7 @@ final class RealtimeWebSocketClient {
     private var messageHandler: ((Data) -> Void)?
     private var errorHandler: ((Error) -> Void)?
     private var connectionHandler: ((Bool) -> Void)?
+    private var isConnectionEstablished: Bool = false
     
     init(apiKey: String, model: String = "gpt-4o-realtime-preview-2024-12-17") {
         self.apiKey = apiKey
@@ -49,15 +50,22 @@ final class RealtimeWebSocketClient {
         webSocketTask = session.webSocketTask(with: request)
         
         logger.info("Connecting to Realtime API...")
+        isConnectionEstablished = false
         webSocketTask?.resume()
         
-        connectionHandler?(true)
+        // Start receiving messages - connection will be established when we receive first message
         receiveMessages()
+        
+        // Also check connection state after a short delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.checkConnectionState()
+        }
     }
     
     /// Disconnect from Realtime API
     func disconnect() {
         logger.info("Disconnecting from Realtime API...")
+        isConnectionEstablished = false
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         connectionHandler?(false)
@@ -67,6 +75,34 @@ final class RealtimeWebSocketClient {
     func sendMessage(_ message: [String: Any]) {
         guard let webSocketTask = webSocketTask else {
             logger.warning("WebSocket not connected, cannot send message")
+            let error = NSError(
+                domain: "RealtimeWebSocket",
+                code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "Socket is not connected"]
+            )
+            errorHandler?(error)
+            return
+        }
+        
+        guard isConnectionEstablished else {
+            logger.warning("WebSocket connection not established yet, cannot send message")
+            let error = NSError(
+                domain: "RealtimeWebSocket",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "Socket is not connected"]
+            )
+            errorHandler?(error)
+            return
+        }
+        
+        guard webSocketTask.state == .running else {
+            logger.warning("WebSocket task is not running (state: \(webSocketTask.state.rawValue)), cannot send message")
+            let error = NSError(
+                domain: "RealtimeWebSocket",
+                code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "Socket is not connected"]
+            )
+            errorHandler?(error)
             return
         }
         
@@ -78,6 +114,11 @@ final class RealtimeWebSocketClient {
             webSocketTask.send(wsMessage) { [weak self] error in
                 if let error = error {
                     self?.logger.error("Failed to send message: \(error.localizedDescription)")
+                    // Mark connection as lost if send fails
+                    if let self = self, self.isConnectionEstablished {
+                        self.isConnectionEstablished = false
+                        self.connectionHandler?(false)
+                    }
                     self?.errorHandler?(error)
                 } else {
                     self?.logger.debug("Message sent successfully")
@@ -126,7 +167,7 @@ final class RealtimeWebSocketClient {
     /// Check if connected
     var isConnected: Bool {
         guard let task = webSocketTask else { return false }
-        return task.state == .running
+        return task.state == .running && isConnectionEstablished
     }
     
     // MARK: - Private
@@ -137,6 +178,13 @@ final class RealtimeWebSocketClient {
             
             switch result {
             case .success(let message):
+                // Connection is established when we receive first message
+                if !self.isConnectionEstablished {
+                    self.isConnectionEstablished = true
+                    self.logger.info("WebSocket connection established")
+                    self.connectionHandler?(true)
+                }
+                
                 switch message {
                 case .string(let text):
                     if let data = text.data(using: .utf8) {
@@ -153,9 +201,30 @@ final class RealtimeWebSocketClient {
                 
             case .failure(let error):
                 self.logger.error("WebSocket receive error: \(error.localizedDescription)")
+                if self.isConnectionEstablished {
+                    self.isConnectionEstablished = false
+                    self.connectionHandler?(false)
+                }
                 self.errorHandler?(error)
                 // Try to reconnect or stop
                 self.disconnect()
+            }
+        }
+    }
+    
+    private func checkConnectionState() {
+        guard let task = webSocketTask else { return }
+        
+        // Check if connection failed
+        if task.state == .completed || task.state == .canceling {
+            if !isConnectionEstablished {
+                logger.error("WebSocket connection failed - task state: \(task.state.rawValue)")
+                let error = NSError(
+                    domain: "RealtimeWebSocket",
+                    code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: "Failed to establish WebSocket connection"]
+                )
+                errorHandler?(error)
             }
         }
     }

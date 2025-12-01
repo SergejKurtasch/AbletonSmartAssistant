@@ -73,7 +73,12 @@ final class VoiceOutputManager {
     
     /// Add audio data to playback buffer
     func addAudioData(_ data: Data) {
-        guard isPlaying else { return }
+        guard isPlaying else {
+            logger.warning("Received audio data but playback is not active")
+            return
+        }
+        
+        logger.debug("Received \(data.count) bytes of audio for playback")
         
         bufferQueue.async { [weak self] in
             guard let self = self else { return }
@@ -121,6 +126,7 @@ final class VoiceOutputManager {
             
             // Convert Data to AVAudioPCMBuffer
             guard let buffer = createPCMBuffer(from: dataToPlay, format: format) else {
+                logger.warning("Failed to create PCM buffer from audio data")
                 return
             }
             
@@ -132,6 +138,7 @@ final class VoiceOutputManager {
             // Start playing if not already
             if !playerNode.isPlaying {
                 playerNode.play()
+                logger.debug("Started audio playback")
             }
         }
     }

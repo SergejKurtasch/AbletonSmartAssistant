@@ -12,13 +12,8 @@ final class AssistantSession {
     private let overlayController = OverlayWindowController()
     private let functionRouter = AssistantFunctionRouter()
     
-    // Realtime API components
-    private var realtimeSession: RealtimeSession?
-    private var voiceInputManager: VoiceInputManager?
-    private var voiceOutputManager: VoiceOutputManager?
-    
-    // State
-    private var isRealtimeActive: Bool = false
+    // Text-to-Speech service
+    let ttsService: TextToSpeechService
 
     init(
         ragStore: RAGStore,
@@ -35,6 +30,7 @@ final class AssistantSession {
             logger.warning("OPENAI_API_KEY not found. Please set it in .env file or environment variables.")
         }
         self.openAIClient = OpenAI(apiToken: apiKey)
+        self.ttsService = TextToSpeechService(apiKey: apiKey)
     }
 
     func handleUserText(
@@ -42,13 +38,7 @@ final class AssistantSession {
         edition: AbletonEdition,
         autoCapture: Bool
     ) async {
-        // If Realtime session is active, send text through it
-        if isRealtimeActive, let realtimeSession = realtimeSession {
-            realtimeSession.sendText(text)
-            return
-        }
-        
-        // Otherwise, use HTTP API (original behavior)
+        // Use HTTP API
         let ragContext = ragStore.retrieve(for: text, edition: edition)
         do {
             let chatQuery = ChatQuery(
@@ -76,142 +66,23 @@ final class AssistantSession {
         }
     }
 
-    func handleAudioChunk(_ chunk: Data) {
-        // Audio chunks are now handled by VoiceInputManager
-        // This method is kept for backward compatibility
-        if isRealtimeActive {
-            realtimeSession?.sendAudioFrame(chunk)
-        }
-    }
-    
-    /// Start Realtime voice assistant session
-    func startRealtimeSession() {
-        guard !isRealtimeActive else {
-            logger.warning("Realtime session already active")
-            return
-        }
-        
-        logger.info("Starting Realtime voice assistant session...")
-        
-        guard let apiKey = EnvLoader.loadAPIKey(), !apiKey.isEmpty else {
-            logger.error("API key not found")
-            return
-        }
-        
-        // Create Realtime session
-        let session = RealtimeSession(
-            apiKey: apiKey,
-            ragStore: ragStore,
-            conversationStore: conversationStore,
-            edition: conversationStore.abletonEdition
-        )
-        
-        // Setup callbacks BEFORE starting (so errors are handled)
-        setupRealtimeCallbacks(session)
-        
-        // Create voice managers
-        let inputManager = VoiceInputManager(audioPipeline: audioPipeline, realtimeSession: session)
-        let outputManager = VoiceOutputManager()
-        
-        // Setup voice output callback
-        session.onAudioDelta = { [weak outputManager] audioData in
-            outputManager?.addAudioData(audioData)
-        }
-        
-        // Store references
-        self.realtimeSession = session
-        self.voiceInputManager = inputManager
-        self.voiceOutputManager = outputManager
-        
-        // Start everything
-        session.start()
-        inputManager.start()
-        outputManager.start()
-        
-        // Set state only after everything is started
-        // If connection fails, onError will call stopRealtimeSession() to reset state
-        isRealtimeActive = true
-        conversationStore.isRealtimeActive = true
-    }
-    
-    /// Stop Realtime voice assistant session
-    func stopRealtimeSession() {
-        guard isRealtimeActive else {
-            logger.warning("Realtime session not active")
-            return
-        }
-        
-        logger.info("Stopping Realtime voice assistant session...")
-        
-        voiceInputManager?.stop()
-        voiceOutputManager?.stop()
-        realtimeSession?.stop()
-        
-        voiceInputManager = nil
-        voiceOutputManager = nil
-        realtimeSession = nil
-        
-        isRealtimeActive = false
-        conversationStore.isRealtimeActive = false
-    }
-    
-    private func setupRealtimeCallbacks(_ session: RealtimeSession) {
-        // Text delta
-        session.onTextDelta = { [weak self] delta in
-            // Text is being streamed, could update UI in real-time if needed
-            self?.logger.debug("Text delta: \(delta)")
-        }
-        
-        // Response completed
-        session.onResponseCompleted = { [weak self] in
-            self?.logger.info("Response completed")
-        }
-        
-        // Speech events
-        session.onSpeechStarted = { [weak self] in
-            self?.logger.info("Speech started")
-            self?.conversationStore.isListening = true
-        }
-        
-        session.onSpeechStopped = { [weak self] in
-            self?.logger.info("Speech stopped")
-            self?.conversationStore.isListening = false
-        }
-        
-        // Status changes
-        session.onStatusChange = { [weak self] status in
-            self?.logger.info("Status: \(status)")
-            // Could update UI status here
-        }
-        
-        // Function calls
-        session.onFunctionCall = { [weak self] name, arguments, callID in
-            guard let self = self else {
-                return ["success": false, "error": "Session deallocated"]
-            }
-            
-            // Parse arguments
-            let parsedArgs = self.functionRouter.parseArguments(arguments)
-            
-            // Execute function
-            return await self.functionRouter.executeFunction(name: name, arguments: parsedArgs)
-        }
-        
-        // Errors
-        session.onError = { [weak self] error in
-            guard let self = self else { return }
-            self.logger.error("Realtime session error: \(error.localizedDescription)")
-            
-            // Add error message to conversation
+    /// Generate speech from text using TTS API
+    func generateSpeech(from text: String) async {
+        do {
+            try await ttsService.generateAndPlay(text: text)
+        } catch {
+            logger.error("Failed to generate speech: \(error.localizedDescription)")
             let entry = ConversationEntry(
                 role: .assistant,
-                text: "Realtime session error: \(error.localizedDescription)"
+                text: "⚠️ Failed to generate audio: \(error.localizedDescription)"
             )
-            self.conversationStore.append(entry)
-            
-            // Stop the session and reset state to unblock input
-            self.stopRealtimeSession()
+            conversationStore.append(entry)
         }
+    }
+    
+    /// Generate speech and return file URL for player
+    func generateSpeechToFile(from text: String) async throws -> URL {
+        return try await ttsService.generateSpeechToFile(text: text)
     }
 
     func updateAutoCapture(isEnabled: Bool) {
