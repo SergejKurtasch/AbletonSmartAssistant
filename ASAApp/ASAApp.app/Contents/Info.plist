@@ -24,5 +24,9 @@
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>ASAApp needs access to your microphone to transcribe voice input and communicate with the AI assistant.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>ASAApp needs access to your camera for screenshot functionality.</string>
 </dict>
 </plist>

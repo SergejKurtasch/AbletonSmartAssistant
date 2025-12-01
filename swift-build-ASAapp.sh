@@ -149,6 +149,10 @@ if [ $? -eq 0 ]; then
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>ASAApp needs access to your microphone to transcribe voice input and communicate with the AI assistant.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>ASAApp needs access to your camera for screenshot functionality.</string>
 </dict>
 </plist>
 EOF
@@ -157,6 +161,17 @@ EOF
     if [ -f "$PROJECT_DIR/Config/ASAApp.entitlements" ]; then
         cp "$PROJECT_DIR/Config/ASAApp.entitlements" "$RESOURCES_PATH/"
         echo "✅ Copied entitlements"
+        
+        # Sign the app with entitlements (ad-hoc signing for development)
+        echo "🔐 Signing application with entitlements..."
+        codesign --force --deep --sign - --entitlements "$RESOURCES_PATH/ASAApp.entitlements" "$APP_PATH"
+        if [ $? -eq 0 ]; then
+            echo "✅ Application signed successfully"
+        else
+            echo "⚠️  Code signing failed, but app may still work"
+        fi
+    else
+        echo "⚠️  Entitlements file not found, skipping code signing"
     fi
     
     echo "✅ .app bundle created: $APP_PATH"
