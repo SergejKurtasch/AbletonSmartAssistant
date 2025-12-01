@@ -47,6 +47,13 @@ struct SidebarView: View {
             .onChange(of: store.abletonEdition) { newValue in
                 editionRaw = newValue.rawValue
             }
+            
+            Picker("Speech Recognition", selection: $store.speechRecognitionLanguage) {
+                ForEach(SpeechRecognitionLanguage.allCases) { language in
+                    Text(language.rawValue).tag(language)
+                }
+            }
+            .pickerStyle(.menu)
 
             HStack(spacing: 12) {
                 Button("Take Screenshot") {
@@ -275,7 +282,7 @@ struct SidebarView: View {
         
         Task {
             do {
-                let transcribedText = try await service.stopAndTranscribe()
+                let transcribedText = try await service.stopAndTranscribe(language: store.speechRecognitionLanguage)
                 await MainActor.run {
                     userInput = transcribedText
                     statusMessage = ""

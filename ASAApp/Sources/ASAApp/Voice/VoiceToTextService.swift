@@ -20,6 +20,25 @@ final class VoiceToTextService {
         self.audioPipeline = audioPipeline
     }
     
+    /// Generate prompt with Ableton Live terminology
+    private func generateAbletonPrompt() -> String {
+        // Top Ableton Live terms extracted from manual
+        let terms = [
+            "Ableton Live", "Session View", "Arrangement View", "Clip", "Track", "Device", "Rack",
+            "Drum Rack", "Simpler", "Sampler", "Operator", "Wavetable", "Drum Sampler",
+            "Reverb", "Delay", "Compressor", "EQ", "Filter", "Gate", "LFO", "Envelope",
+            "Record", "Play", "Stop", "Loop", "Quantize", "Warp", "Launch", "Automation",
+            "MIDI", "Audio", "Mixer", "Send", "Return", "Master", "Browser", "Library",
+            "Pack", "Live Set", "Project", "Control Bar", "Transport", "Tempo", "Metronome",
+            "Scale", "Follow", "Editor", "Note", "Velocity", "Probability", "Marker", "Scene",
+            "Slot", "Chain", "Macro", "Preset", "Sample", "WAV", "MP3", "AIF", "FLAC",
+            "Link", "Push", "Cloud", "Max for Live", "Plug-in", "VST", "AU", "AAX",
+            "ADSR", "Oscillator", "Synthesizer", "Sequencer", "MPE", "Pitch", "Time",
+            "Settings", "Options", "Menu", "Window", "Panel", "Tab"
+        ]
+        return terms.joined(separator: ", ")
+    }
+    
     /// Start recording audio
     func startRecording() throws {
         guard !isRecording else {
@@ -62,7 +81,7 @@ final class VoiceToTextService {
     }
     
     /// Stop recording and transcribe
-    func stopAndTranscribe() async throws -> String {
+    func stopAndTranscribe(language: SpeechRecognitionLanguage = .auto) async throws -> String {
         guard isRecording else {
             throw VoiceToTextError.notRecording
         }
@@ -107,7 +126,7 @@ final class VoiceToTextService {
         }
         
         // Transcribe audio file
-        let transcription = try await transcribeAudioFile(fileURL)
+        let transcription = try await transcribeAudioFile(fileURL, language: language)
         
         // Clean up temporary file
         try? FileManager.default.removeItem(at: fileURL)
@@ -202,7 +221,7 @@ final class VoiceToTextService {
         logger.info("WAV file written: \(url.path), size: \(header.count + data.count) bytes, sampleRate: \(sampleRate), channels: \(channels)")
     }
     
-    private func transcribeAudioFile(_ fileURL: URL) async throws -> String {
+    private func transcribeAudioFile(_ fileURL: URL, language: SpeechRecognitionLanguage = .auto) async throws -> String {
         guard !apiKey.isEmpty else {
             throw VoiceToTextError.apiKeyMissing
         }
@@ -229,10 +248,25 @@ final class VoiceToTextService {
         body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
         body.append("whisper-1\r\n".data(using: .utf8)!)
         
-        // Add language parameter (auto-detect)
+        // Add language parameter
+        if let languageCode = language.whisperLanguageCode {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(languageCode)\r\n".data(using: .utf8)!)
+            logger.info("Using language: \(languageCode)")
+        } else {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\r\n".data(using: .utf8)!) // Empty for auto-detect
+            logger.info("Using auto-detect language")
+        }
+        
+        // Add prompt parameter with Ableton Live terminology
+        let prompt = generateAbletonPrompt()
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
-        body.append("\r\n".data(using: .utf8)!) // Empty for auto-detect
+        body.append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(prompt)\r\n".data(using: .utf8)!)
+        logger.info("Using prompt with \(prompt.split(separator: ",").count) Ableton Live terms")
         
         // Add file
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
