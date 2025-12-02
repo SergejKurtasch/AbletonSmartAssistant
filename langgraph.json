@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "langgraph_server.workflow:create_workflow"
+  },
+  "env": ".env"
+}
+
