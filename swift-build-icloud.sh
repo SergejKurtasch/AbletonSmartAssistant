@@ -98,8 +98,51 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "✅ Build successful!"
     echo ""
+    
+    # Start LangGraph server in background
+    LANGGRAPH_DIR="$(dirname "$PROJECT_DIR")/langgraph_server"
+    if [ -d "$LANGGRAPH_DIR" ]; then
+        echo "🚀 Starting LangGraph server..."
+        cd "$LANGGRAPH_DIR" || {
+            echo "⚠️  Failed to change to langgraph_server directory"
+        }
+        
+        # Check if server is already running
+        if lsof -Pi :8000 -sTCP:LISTEN -t >/dev/null 2>&1; then
+            echo "✅ LangGraph server is already running on port 8000"
+        else
+            # Start server in background
+            python -m uvicorn main:app --host 0.0.0.0 --port 8000 > /tmp/langgraph_server.log 2>&1 &
+            LANGGRAPH_PID=$!
+            echo "✅ LangGraph server started (PID: $LANGGRAPH_PID)"
+            echo "   Logs: /tmp/langgraph_server.log"
+            echo "   Waiting 2 seconds for server to start..."
+            sleep 2
+            
+            # Check if server started successfully
+            if ! kill -0 $LANGGRAPH_PID 2>/dev/null; then
+                echo "⚠️  LangGraph server failed to start. Check /tmp/langgraph_server.log"
+            else
+                echo "✅ LangGraph server is ready"
+            fi
+        fi
+        
+        cd "$PROJECT_DIR" || exit 1
+    else
+        echo "⚠️  LangGraph server directory not found: $LANGGRAPH_DIR"
+        echo "   Continuing without LangGraph server (app will use simple mode)"
+    fi
+    
+    echo ""
     echo "🚀 Running application..."
     swift run ASAApp
+    
+    # Cleanup: kill LangGraph server if we started it
+    if [ -n "$LANGGRAPH_PID" ] && kill -0 $LANGGRAPH_PID 2>/dev/null; then
+        echo ""
+        echo "🛑 Stopping LangGraph server (PID: $LANGGRAPH_PID)..."
+        kill $LANGGRAPH_PID 2>/dev/null
+    fi
 else
     echo ""
     echo "❌ Build error"

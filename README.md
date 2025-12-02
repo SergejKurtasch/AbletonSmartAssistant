@@ -72,7 +72,52 @@ This command creates `AbletonFullIndex.json` and `AbletonLiteDiffIndex.json` ins
 - Uses the OpenAI embeddings API for higher-quality search
 - Each chunk carries metadata such as title, page, and chapter
 
-### 4. Run the app
+### 4. Start LangGraph server (optional, for step-by-step mode)
+
+The LangGraph server provides advanced step-by-step guidance for complex Ableton tasks. It's optional - the app will fall back to simple mode if the server is not running.
+
+**Start the server:**
+```bash
+# Make sure you're in the project root
+cd langgraph_server
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Or use the provided script:
+```bash
+chmod +x langgraph_server/run.sh
+./langgraph_server/run.sh
+```
+
+The server will be available at `http://localhost:8000`. The Swift app will automatically connect to it when processing Ableton-related queries.
+
+**Note:** The server requires the same data files as the Swift app (`data/live12-manual-chunks-with-embeddings.json` and `data/Ableton-versions-diff-chunks-with-embeddings.json`). Make sure you've generated them in step 3.
+
+### 4a. Visualize workflow architecture with LangGraph Studio
+
+LangGraph Studio provides a visual interface to explore, debug, and test your LangGraph workflow.
+
+**Quick start:**
+```bash
+# Install dependencies (if not already done)
+pip install -r requirements.txt
+
+# Start LangGraph Studio
+./start-langgraph-studio.sh
+
+# Or manually:
+langgraph dev
+```
+
+Studio will open at `http://localhost:8123` where you can:
+- **Visualize the entire workflow** - see all nodes, edges, and conditional routes
+- **Test the workflow** - run it with sample data and see execution flow
+- **Debug issues** - track state changes at each step
+- **Explore architecture** - understand the flow from intent detection to step-by-step guidance
+
+For detailed setup instructions, see `docs/LANGGRAPH_STUDIO_SETUP.md`.
+
+### 5. Run the app
 
 **Via Swift Package Manager:**
 ```bash
@@ -85,7 +130,7 @@ swift run ASAApp
 1. Open `ASAApp/Package.swift` in Xcode
 2. Press Run (⌘R)
 
-### 5. macOS permissions
+### 6. macOS permissions
 
 On first launch macOS will request:
 - **Microphone** — for voice input
@@ -106,6 +151,13 @@ AI_assistant/
 │   │   ├── RAG/              # Retrieval-Augmented Generation logic
 │   │   └── Overlay/          # Overlay window
 │   └── Package.swift
+├── langgraph_server/         # Python LangGraph server
+│   ├── main.py               # FastAPI application
+│   ├── workflow.py           # LangGraph workflow definition
+│   ├── nodes.py              # Workflow nodes
+│   ├── state.py              # State management
+│   ├── rag.py                # RAG search (Python)
+│   └── config.py             # Configuration
 ├── scripts/
 │   └── RAGIngest.py          # PDF ingestion script
 ├── data/                      # PDF manuals + generated indices
@@ -122,10 +174,15 @@ AI_assistant/
 - **RAG system** grounded in Ableton documentation
 - **Visual hints** (arrows, highlights) over the Ableton UI
 - **Edition awareness** for Suite, Standard, Intro, and Lite
+- **Step-by-step guidance** via LangGraph agent (optional, requires Python server)
 
 ## Testing
 
 See `docs/SMOKE_TESTS.md` for the manual checklist that covers the core scenarios.
+
+## Troubleshooting
+
+If you're experiencing issues with the chat or LangGraph server, see `docs/TROUBLESHOOTING.md` for common problems and solutions.
 
 ## Development
 

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-assistant"
+version = "0.1.0"
+description = "Ableton Smart Assistant with LangGraph"
+requires-python = ">=3.10"
+dependencies = [
+    "pypdf>=4.0.0",
+    "openai>=1.0.0",
+    "numpy>=1.24.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "langgraph>=0.0.20",
+    "langchain>=0.1.0",
+    "langchain-openai>=0.0.5",
+    "python-multipart>=0.0.6",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "langgraph-cli>=0.0.40",
+]
+
+[tool.setuptools]
+packages = ["langgraph_server"]
+
+[tool.setuptools.package-data]
+langgraph_server = ["*.py"]
+
